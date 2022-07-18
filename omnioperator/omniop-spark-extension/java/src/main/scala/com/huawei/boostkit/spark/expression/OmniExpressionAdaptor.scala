@@ -19,14 +19,12 @@
 package com.huawei.boostkit.spark.expression
 
 import com.huawei.boostkit.spark.Constant.{DEFAULT_STRING_TYPE_LENGTH, IS_DECIMAL_CHECK, OMNI_BOOLEAN_TYPE, OMNI_DATE_TYPE, OMNI_DECIMAL128_TYPE, OMNI_DECIMAL64_TYPE, OMNI_DOUBLE_TYPE, OMNI_INTEGER_TYPE, OMNI_LONG_TYPE, OMNI_SHOR_TYPE, OMNI_VARCHAR_TYPE}
-import nova.hetu.omniruntime.`type`.{BooleanDataType, DataTypeSerializer, Date32DataType, Decimal128DataType, Decimal64DataType, DoubleDataType, IntDataType, LongDataType, ShortDataType, VarcharDataType}
-import nova.hetu.omniruntime.constants.FunctionType
-import nova.hetu.omniruntime.constants.FunctionType.{OMNI_AGGREGATION_TYPE_AVG, OMNI_AGGREGATION_TYPE_COUNT_COLUMN, OMNI_AGGREGATION_TYPE_MAX, OMNI_AGGREGATION_TYPE_MIN, OMNI_AGGREGATION_TYPE_SUM, OMNI_WINDOW_TYPE_RANK, OMNI_WINDOW_TYPE_ROW_NUMBER}
-import nova.hetu.omniruntime.operator.OmniExprVerify
+import com.huawei.boostkit.spark.expression.OmniExpressionAdaptor.getArgumentByParamCount
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.util.CharVarcharUtils.getRawTypeString
+import org.apache.spark.sql.hive.HiveUdfAdaptorUtil
 import org.apache.spark.sql.types.{BooleanType, DataType, DateType, Decimal, DecimalType, DoubleType, IntegerType, LongType, Metadata, ShortType, StringType}
 
 import scala.collection.mutable.ArrayBuffer
@@ -589,8 +587,31 @@ object OmniExpressionAdaptor extends Logging {
         getConcatJsonStr(concat, exprsIndexMap)
       case attr: Attribute => toOmniJsonAttribute(attr, exprsIndexMap(attr.exprId))
       case _ =>
-        throw new UnsupportedOperationException(s"Unsupported expression: $expr")
+        if (HiveUdfAdaptorUtil.isHiveUdf(expr)) {
+          val hiveUdf = HiveUdfAdaptorUtil.asHiveSimpleUDF(expr)
+          val udfName = hiveUdf.name.split("\\.")(1)
+          ("{\"exprType\":\"FUNCTION\",\"returnType\":%s,\"function_name\":\"%s\"," +
+            "\"arguments\":[%s]}").format(sparkTypeToOmniExpJsonType(hiveUdf.dataType), udfName,
+            getArgumentByParamCount(hiveUdf.children, exprsIndexMap))
+        } else {
+          throw new UnsupportedOperationException(s"Unsupported expression: $expr")
+        }
     }
+  }
+
+  private def getArgumentByParamCount(children: Seq[Expression],
+                                      exprsIndexMap: Map[ExprId, Int]): String = {
+    val size = children.size
+    val stringBuilder = new StringBuilder
+    if (size == 0) {
+      return ""
+    }
+    for (i <- 0 until size - 1) {
+      stringBuilder.append(rewriteToOmniJsonExpressionLiteral(children(i), exprsIndexMap))
+      stringBuilder.append(",")
+    }
+    stringBuilder.append(rewriteToOmniJsonExpressionLiteral(children(size - 1), exprsIndexMap))
+    stringBuilder.toString()
   }
 
   private def checkInputDataTypes(children: Seq[Expression]): Unit = {
